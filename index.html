@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>3D Sphere Audio Visualizer — single file</title>
+<style>
+  :root{
+    --bg:#05121a;
+    --panel: rgba(6,14,20,0.6);
+    --accent:#6ee7b7;
+    --muted:#9fb6c2;
+  }
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;background:linear-gradient(180deg,var(--bg),#011019);}
+  #app{height:100%;display:flex;flex-direction:column;}
+  #canvasWrap{flex:1;position:relative;overflow:hidden;}
+  canvas{width:100%;height:100%;display:block;}
+
+  /* UI */
+  .panel{
+    position:absolute;left:12px;top:12px;padding:12px;border-radius:12px;background:var(--panel);backdrop-filter: blur(6px);
+    color:#e6f4ef;min-width:320px;max-width:420px;box-shadow:0 12px 40px rgba(0,0,0,0.6);
+  }
+  .row{display:flex;gap:8px;align-items:center;margin:8px 0;}
+  label{min-width:86px;font-size:13px;color:var(--muted)}
+  input[type=file]{display:none}
+  .drop{
+    padding:8px;border-radius:8px;border:1px dashed rgba(255,255,255,0.06);cursor:pointer;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);
+    color:var(--muted);font-size:13px;
+  }
+  button{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--accent);padding:6px 10px;border-radius:8px;cursor:pointer}
+  select,input[type=range]{width:100%}
+  .small{font-size:12px;color:var(--muted);margin-top:6px}
+  .rightBottom{position:absolute;right:12px;bottom:12px;color:#8fa5b3;background:transparent;font-size:13px;padding:8px 12px;border-radius:8px}
+  .progress{
+    height:8px;background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden;width:100%;
+  }
+  .progress > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#00c2ff);width:0%;}
+  .meta{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+  <div id="app">
+    <div id="canvasWrap">
+      <div class="panel" id="ui">
+        <h3 style="margin:0 0 6px 0">3D Sphere Audio Visualizer</h3>
+
+        <div class="row">
+          <label>Audio</label>
+          <div style="flex:1">
+            <div id="drop" class="drop">Click hoặc kéo file vào đây (mp3, wav, m4a...)</div>
+            <input id="fileInput" type="file" accept="audio/*">
+            <div class="small" id="fileName">Chưa có file</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <label>Controls</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button id="play">Play</button>
+            <button id="pause">Pause</button>
+            <button id="stop">Stop</button>
+            <button id="snap" title="Lưu ảnh màn hình">Snapshot</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <label>Progress</label>
+          <div style="flex:1">
+            <div class="progress"><i id="progBar"></i></div>
+            <div class="meta" id="timeInfo">00:00 / 00:00</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <label>Volume</label>
+          <input id="volume" type="range" min="0" max="2" step="0.01" value="1">
+        </div>
+
+        <div class="row">
+          <label>Loop</label>
+          <input id="loop" type="checkbox">
+        </div>
+
+        <div class="row">
+          <label>FFT</label>
+          <select id="fft">
+            <option value="512">512</option>
+            <option value="1024" selected>1024</option>
+            <option value="2048">2048</option>
+            <option value="4096">4096</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <label>Smooth (geom)</label>
+          <input id="geomSmooth" type="range" min="0" max="0.99" step="0.01" value="0.85">
+        </div>
+
+        <div class="row">
+          <label>Intensity</label>
+          <input id="intensity" type="range" min="0" max="6" step="0.01" value="1.6">
+        </div>
+
+        <div class="row">
+          <label>Render</label>
+          <select id="renderMode">
+            <option value="solid" selected>Solid</option>
+            <option value="wire">Wireframe</option>
+            <option value="both">Both</option>
+          </select>
+        </div>
+
+        <div class="small" style="margin-top:8px">Mẹo: bấm canvas để xoay, cuộn để zoom. Nếu không phát được, click Play để cho phép âm thanh.</div>
+      </div>
+
+      <div class="rightBottom">Drag để xoay • Scroll để zoom</div>
+    </div>
+  </div>
+
+  <!-- three.js non-module (dùng được khi mở bằng file://) -->
+  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.152.2/examples/js/controls/OrbitControls.js"></script>
+
+  <script>
+  // ---------- Basic Three setup ----------
+  const wrap = document.getElementById('canvasWrap');
+  const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+  wrap.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(50, wrap.clientWidth / wrap.clientHeight, 0.1, 2000);
+  camera.position.set(0, 0, 6);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  window.addEventListener('resize', ()=> {
+    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+    camera.aspect = wrap.clientWidth / wrap.clientHeight;
+    camera.updateProjectionMatrix();
+  });
+
+  // lighting
+  scene.add(new THREE.HemisphereLight(0x99ccff, 0x001020, 0.9));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+  dir.position.set(5, 8, 6);
+  scene.add(dir);
+
+  // ---------- Sphere geometry ----------
+  const R = 1.6;
+  const WIDTH_SEG = 96; // nếu máy yếu hạ xuống 48
+  const HEIGHT_SEG = 64;
+
+  const sphereGeom = new THREE.SphereGeometry(R, WIDTH_SEG, HEIGHT_SEG);
+  // clone positions to keep original
+  const originalPos = new Float32Array(sphereGeom.attributes.position.array.length);
+  originalPos.set(sphereGeom.attributes.position.array);
+
+  // per-vertex seed (for variety)
+  const vcount = sphereGeom.attributes.position.count;
+  const seed = new Float32Array(vcount);
+  for (let i=0;i<vcount;i++) seed[i] = Math.random();
+
+  // Materials
+  const matSolid = new THREE.MeshStandardMaterial({
+    color: 0x2ee3c2,
+    metalness: 0.12,
+    roughness: 0.45,
+    emissive: 0x002a28,
+    emissiveIntensity: 0.6,
+    flatShading: false
+  });
+  const matWire = new THREE.MeshBasicMaterial({ color: 0x7fffe8, wireframe:true, transparent:true, opacity:0.16 });
+
+  const meshSolid = new THREE.Mesh(sphereGeom, matSolid);
+  const meshWire = new THREE.Mesh(sphereGeom.clone(), matWire); // clone for separate wireframe
+  scene.add(meshSolid);
+  scene.add(meshWire);
+
+  // default render mode
+  function setRenderMode(mode){
+    if (mode === 'solid') { meshSolid.visible=true; meshWire.visible=false; }
+    else if (mode === 'wire') { meshSolid.visible=false; meshWire.visible=true; }
+    else { meshSolid.visible=true; meshWire.visible=true; }
+  }
+  setRenderMode(document.getElementById('renderMode').value);
+
+  // ---------- Audio setup ----------
+  let audioCtx = null;
+  let analyser = null;
+  let sourceNode = null;
+  let audioEl = null;
+  let gainNode = null;
+  let freqData = null;
+
+  function ensureAudio(fft=1024, smoothingTime=0.85){
+    if (!audioCtx){
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = fft;
+      analyser.smoothingTimeConstant = smoothingTime;
+      gainNode = audioCtx.createGain();
+      gainNode.gain.value = Number(document.getElementById('volume').value) || 1.0;
+      analyser.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+    } else {
+      analyser.fftSize = fft;
+      analyser.smoothingTimeConstant = smoothingTime;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+    }
+  }
+
+  // when file selected
+  const fileInput = document.getElementById('fileInput');
+  const drop = document.getElementById('drop');
+  const fileNameEl = document.getElementById('fileName');
+  fileInput.addEventListener('change', e => {
+    if (e.target.files && e.target.files[0]) setFile(e.target.files[0]);
+  });
+
+  // drag & drop
+  drop.addEventListener('click', ()=> fileInput.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.borderColor='#6ee7b7'; });
+  drop.addEventListener('dragleave', e => { e.preventDefault(); drop.style.borderColor=''; });
+  drop.addEventListener('drop', e => {
+    e.preventDefault();
+    drop.style.borderColor='';
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) { fileInput.files = e.dataTransfer.files; setFile(f); }
+  });
+
+  async function setFile(file){
+    // create audio context on first gesture
+    ensureAudio(Number(document.getElementById('fft').value), 0.85);
+    // cleanup old
+    if (audioEl) {
+      audioEl.pause();
+      try{ URL.revokeObjectURL(audioEl.src); }catch(e){}
+    }
+    audioEl = new Audio(URL.createObjectURL(file));
+    audioEl.crossOrigin = "anonymous";
+    audioEl.loop = document.getElementById('loop').checked;
+    audioEl.preload = 'auto';
+
+    // connect
+    try {
+      if (sourceNode) sourceNode.disconnect();
+      sourceNode = audioCtx.createMediaElementSource(audioEl);
+      sourceNode.connect(analyser);
+      // analyser -> gain -> dest already connected in ensureAudio
+      fileNameEl.textContent = file.name + ' • ' + Math.round(file.size/1024) + 'KB';
+      // update duration when metadata loaded
+      audioEl.addEventListener('loadedmetadata', ()=> updateTimeInfo());
+      audioEl.addEventListener('timeupdate', ()=> updateProgress());
+      audioEl.addEventListener('ended', ()=> updateProgress());
+    } catch (err) {
+      console.error('Error connecting audio source', err);
+      alert('Trình duyệt không cho phép kết nối audio source (xài local server thử).');
+    }
+  }
+
+  // UI controls
+  document.getElementById('play').addEventListener('click', async ()=>{
+    if (!audioEl) return alert('Chọn file audio trước.');
+    if (!audioCtx) ensureAudio(Number(document.getElementById('fft').value), 0.85);
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    audioEl.play();
+  });
+  document.getElementById('pause').addEventListener('click', ()=>{ if (audioEl) audioEl.pause(); });
+  document.getElementById('stop').addEventListener('click', ()=>{ if (audioEl){ audioEl.pause(); audioEl.currentTime = 0; updateProgress(); }});
+  document.getElementById('snap').addEventListener('click', ()=> {
+    // snapshot canvas
+    const data = renderer.domElement.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = data;
+    a.download = 'viz-snapshot.png';
+    a.click();
+  });
+
+  // dynamic UI settings
+  document.getElementById('volume').addEventListener('input', (e)=> {
+    if (gainNode) gainNode.gain.value = Number(e.target.value);
+  });
+  document.getElementById('loop').addEventListener('change', e => { if (audioEl) audioEl.loop = e.target.checked; });
+  document.getElementById('fft').addEventListener('change', e => {
+    const v = Number(e.target.value);
+    if (analyser){
+      analyser.fftSize = v;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+    }
+  });
+  document.getElementById('renderMode').addEventListener('change', e => setRenderMode(e.target.value));
+
+  // progress UI
+  const progBar = document.getElementById('progBar');
+  const timeInfo = document.getElementById('timeInfo');
+  function updateProgress(){
+    if (!audioEl) { progBar.style.width = '0%'; timeInfo.textContent = '00:00 / 00:00'; return; }
+    const cur = audioEl.currentTime || 0;
+    const dur = audioEl.duration || 0;
+    const pct = dur ? Math.max(0, Math.min(1, cur/dur)) * 100 : 0;
+    progBar.style.width = pct + '%';
+    timeInfo.textContent = formatTime(cur) + ' / ' + (isFinite(dur) ? formatTime(dur) : '--:--');
+  }
+  function updateTimeInfo(){ updateProgress(); }
+  function formatTime(s){
+    if (!isFinite(s)) return '--:--';
+    const mm = Math.floor(s/60).toString().padStart(2,'0');
+    const ss = Math.floor(s%60).toString().padStart(2,'0');
+    return mm+':'+ss;
+  }
+
+  // ---------- Audio -> Geometry mapping ----------
+  // Precompute spherical data for each vertex (latitude normalized)
+  const posAttr = sphereGeom.attributes.position;
+  const posArr = posAttr.array;
+  const norms = new Float32Array(posArr.length); // temporary normals may be computed per frame
+  const latNorm = new Float32Array(vcount);
+  for (let i=0;i<vcount;i++){
+    const x = posArr[i*3], y = posArr[i*3+1], z = posArr[i*3+2];
+    // latitude mapping: -1..1 -> north/south; we want 0..1 where 0=top(pole), 1=equator? We'll use polar angle phi
+    const r = Math.sqrt(x*x+y*y+z*z) || 1;
+    const phi = Math.acos(y / r); // 0..pi (0=top pole, pi/2=equator)
+    latNorm[i] = phi / Math.PI; // 0..1
+  }
+
+  // geometry smoothing & other settings
+  const geomSmoothEl = document.getElementById('geomSmooth');
+  const intensityEl = document.getElementById('intensity');
+
+  // helper lerp
+  function lerp(a,b,t){ return a + (b-a) * t; }
+
+  // frame counter: recompute normals less often for perf
+  let frame = 0;
+
+  function updateGeometryFromAudio(){
+    if (!analyser) return;
+    analyser.getByteFrequencyData(freqData);
+    const bins = freqData.length;
+    const intensity = Number(intensityEl.value) || 1.0;
+    const geomSmooth = Number(geomSmoothEl.value); // 0..0.99 higher = more smoothing of vertex movement (we'll use as lerp factor)
+    // energy to control color/emissive
+    let energy = 0;
+    for (let i=0;i<bins;i++) energy += freqData[i];
+    energy = energy / (bins*255); // 0..1
+
+    // color mapping: hue changes with energy
+    // Hue 0.5..0.0 (cyan -> magenta) just for fun
+    const hue = 0.5 - Math.min(0.5, energy*0.6);
+    matSolid.color.setHSL(hue, 0.8, 0.45);
+    matSolid.emissiveIntensity = 0.2 + energy*2.0;
+    matSolid.roughness = Math.max(0.05, 0.6 - energy*0.6);
+    meshSolid.scale.setScalar(1 + energy*0.06);
+
+    // per-vertex update
+    for (let i=0;i<vcount;i++){
+      const ox = originalPos[i*3], oy = originalPos[i*3+1], oz = originalPos[i*3+2];
+      // normal (original)
+      const nx = ox, ny = oy, nz = oz;
+      const nr = Math.hypot(nx,ny,nz) || 1;
+      const nxn = nx/nr, nyn = ny/nr, nzn = nz/nr;
+
+      // choose bin: bias using latitude and seed
+      // latNorm ~ 0 (top pole) .. 1 (bottom pole) via phi/pi; we want equator mid-frequency, poles low/high
+      // create mix: equator -> mid bins, north pole -> low, south pole -> high
+      const lat = latNorm[i]; // 0..1
+      // map to band index:
+      // midBin center
+      const midBinCenter = Math.floor(bins * 0.45);
+      // choose offset by seed
+      const rand = seed[i];
+      // compute blended index
+      let index;
+      // bias: lat near 0.5 -> mid; near 0 -> low; near 1 -> high
+      if (lat < 0.45) {
+        // north hemisphere => mix low..mid
+        const t = lat / 0.45; // 0..1
+        index = Math.floor( ( (1-t) * (bins*0.08) + t * midBinCenter ) * (0.6 + rand*0.8) ) % bins;
+      } else if (lat > 0.55) {
+        // south hemisphere => mix mid..high
+        const t = (lat-0.55) / 0.45; // 0..1
+        index = Math.floor( ( (1-t) * midBinCenter + t * (bins*0.95) ) * (0.6 + rand*0.8) ) % bins;
+      } else {
+        // near equator: mid focus
+        index = Math.floor( midBinCenter * (0.9 + rand*0.3) ) % bins;
+      }
+      if (index < 0) index = 0; if (index >= bins) index = bins-1;
+      const f = freqData[index] / 255; // 0..1
+
+      // displacement magnitude
+      const displacement = Math.pow(f, 1.0) * intensity * (0.45 + rand*0.6);
+
+      // target position
+      const tx = ox + nxn * displacement;
+      const ty = oy + nyn * displacement;
+      const tz = oz + nzn * displacement;
+
+      // current (in buffer)
+      const ci = i*3;
+      // smoothing: we want slower movement when geomSmooth is large -> use (1-geomSmooth) as lerp factor
+      // geomSmooth is 0..0.99 where high means more smoothing -> smaller t
+      const t = 1 - geomSmooth; // 0..1 where larger = faster follow
+      posArr[ci]   = lerp(posArr[ci],   tx, t);
+      posArr[ci+1] = lerp(posArr[ci+1], ty, t);
+      posArr[ci+2] = lerp(posArr[ci+2], tz, t);
+    }
+
+    // mark update and recompute normals occasionally
+    posAttr.needsUpdate = true;
+    // recompute normals every 2 frames to save CPU (still looks OK)
+    frame++;
+    if ((frame & 1) === 0) {
+      sphereGeom.computeVertexNormals();
+      meshWire.geometry.attributes.position.needsUpdate = true;
+      meshWire.geometry.computeVertexNormals();
+    } else {
+      meshWire.geometry.attributes.position.needsUpdate = true;
+    }
+  }
+
+  // ---------- Animation ----------
+  let lastTime = performance.now();
+  function render(now){
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+
+    // update only when audio playing OR small idle rotation
+    if (audioEl && !audioEl.paused && analyser) {
+      updateGeometryFromAudio();
+    } else {
+      // gentle idle breathing using sin
+      const t = now * 0.0004;
+      const s = 1 + Math.sin(t) * 0.01;
+      meshSolid.scale.setScalar(s);
+    }
+
+    // small rotation
+    meshSolid.rotation.y += 0.0025;
+    meshWire.rotation.y = meshSolid.rotation.y;
+
+    controls.update();
+    renderer.render(scene, camera);
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+
+  // ---------- resume audio context on user gesture (some browsers block) ----------
+  function resumeAudioContextOnce(){
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(()=>{});
+    }
+    // detach after first gesture
+    document.removeEventListener('pointerdown', resumeAudioContextOnce);
+    document.removeEventListener('keydown', resumeAudioContextOnce);
+  }
+  document.addEventListener('pointerdown', resumeAudioContextOnce);
+  document.addEventListener('keydown', resumeAudioContextOnce);
+
+  // ---------- small safety: if external scripts blocked (rare), warn user ----------
+  if (typeof THREE === 'undefined') {
+    alert('Three.js không được nạp — nếu bạn mở file trực tiếp và gặp lỗi, thử chạy một local server (python -m http.server) hoặc dùng bản non-CDN.');
+  }
+
+  // initial UI state
+  updateProgress(); // shows 00:00
+
+  // allow clicking progress bar to seek
+  document.querySelector('.progress').addEventListener('click', e=>{
+    if (!audioEl || !audioEl.duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(1, x / rect.width));
+    audioEl.currentTime = pct * audioEl.duration;
+    updateProgress();
+  });
+
+  </script>
+</body>
+</html>
