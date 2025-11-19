@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>3D Sphere Audio Visualizer</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: radial-gradient(1200px 800px at 50% 50%, #0b1020 0%, #05080f 60%, #02040a 100%);
+    color: #e6ecff;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  }
+  #ui {
+    position: fixed;
+    z-index: 10;
+    top: 12px;
+    left: 12px;
+    right: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: rgba(10, 14, 26, 0.55);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  #ui label {
+    font-size: 13px;
+    opacity: 0.9;
+    margin-right: 6px;
+  }
+  #file {
+    color: #cfe3ff;
+  }
+  button {
+    background: #1c2a4d;
+    color: #e6ecff;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  #hint {
+    margin-left: auto;
+    font-size: 12px;
+    opacity: 0.75;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+  <div id="ui">
+    <label for="file">Choose audio:</label>
+    <input id="file" type="file" accept="audio/*" />
+    <button id="play" disabled>Play</button>
+    <button id="pause" disabled>Pause</button>
+    <span id="hint">Tip: pick a song file, then press Play</span>
+  </div>
+  <audio id="audio" crossorigin="anonymous" style="display:none"></audio>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+    // DOM elements
+    const fileInput = document.getElementById('file');
+    const playBtn = document.getElementById('play');
+    const pauseBtn = document.getElementById('pause');
+    const audioEl = document.getElementById('audio');
+
+    // Audio setup
+    let audioCtx = null;
+    let analyser = null;
+    let sourceNode = null;
+    let freqData = null;
+    let objUrl = null;
+
+    const initAudioGraph = () => {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024; // 512 bins
+      analyser.smoothingTimeConstant = 0.85;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+      sourceNode = audioCtx.createMediaElementSource(audioEl);
+      sourceNode.connect(analyser);
+      analyser.connect(audioCtx.destination);
+    };
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      if (objUrl) URL.revokeObjectURL(objUrl);
+      objUrl = URL.createObjectURL(file);
+      audioEl.src = objUrl;
+      audioEl.load();
+      playBtn.disabled = false;
+      pauseBtn.disabled = false;
+    });
+
+    playBtn.addEventListener('click', async () => {
+      initAudioGraph();
+      try {
+        await audioCtx.resume();
+        await audioEl.play();
+      } catch (e) {
+        console.warn('Playback failed:', e);
+      }
+    });
+
+    pauseBtn.addEventListener('click', () => {
+      audioEl.pause();
+    });
+
+    // Three.js setup
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x000000, 0); // let the CSS gradient show through
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 3.5);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.minDistance = 2.2;
+    controls.maxDistance = 8;
+
+    // Lights
+    const ambient = new THREE.AmbientLight(0x88aaff, 0.35);
+    scene.add(ambient);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+    dirLight.position.set(3, 5, 4);
+    scene.add(dirLight);
+
+    const backLight = new THREE.PointLight(0x5588ff, 0.4);
+    backLight.position.set(-3, -2, -4);
+    scene.add(backLight);
+
+    // Sphere geometry and materials
+    const radius = 1.0;
+    const widthSeg = 160;
+    const heightSeg = 90;
+    const sphereGeo = new THREE.SphereGeometry(radius, widthSeg, heightSeg);
+
+    // Keep a copy of original positions for clean displacement
+    const positionAttr = sphereGeo.attributes.position;
+    const basePositions = positionAttr.array.slice(0); // Float32Array copy
+
+    // Material: wireframe to reveal mesh, emissive for reactive glow
+    const sphereMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0x6aa2ff),
+      emissive: new THREE.Color(0x001133),
+      roughness: 0.35,
+      metalness: 0.0,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.9
+    });
+
+    const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+    scene.add(sphere);
+
+    // Subtle inner glow (non-wireframe) for depth
+    const innerMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0x223a7a),
+      emissive: new THREE.Color(0x06112a),
+      roughness: 0.8,
+      metalness: 0.0,
+      wireframe: false,
+      transparent: true,
+      opacity: 0.25
+    });
+    const innerSphere = new THREE.Mesh(sphereGeo.clone(), innerMat);
+    innerSphere.scale.setScalar(0.995);
+    scene.add(innerSphere);
+
+    // Resize handling
+    const onResize = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+    window.addEventListener('resize', onResize);
+
+    // Animation / visualization loop
+    const tmp = { avg: 0, t: 0 };
+    let lastTime = performance.now();
+
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+
+      controls.update();
+
+      // Get audio frequency data if available
+      let avg = 0;
+      if (analyser && freqData) {
+        analyser.getByteFrequencyData(freqData);
+        // Average amplitude
+        let sum = 0;
+        for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+        avg = (sum / freqData.length) / 255; // 0..1
+      } else {
+        // Idle breathing when no audio playing
+        avg = (Math.sin(now * 0.0015) * 0.5 + 0.5) * 0.08;
+      }
+
+      // Displace sphere vertices along their radial direction
+      const arr = positionAttr.array;
+      const base = basePositions;
+      const bins = freqData ? freqData.length : 512;
+      const maxDisp = 0.35; // maximum displacement relative to radius
+
+      for (let i = 0, j = 0; i < positionAttr.count; i++, j += 3) {
+        const bin = i % bins;
+        const amp = freqData ? (freqData[bin] / 255) : (0.5 + 0.5 * Math.sin(0.0008 * now + i * 0.001)) * 0.1;
+        const scale = 1.0 + amp * maxDisp;
+        arr[j    ] = base[j    ] * scale;
+        arr[j + 1] = base[j + 1] * scale;
+        arr[j + 2] = base[j + 2] * scale;
+      }
+      positionAttr.needsUpdate = true;
+
+      // Reactive color/emissive via HSL shift
+      const hue = (0.58 + avg * 0.35) % 1.0; // blue -> cyan range
+      sphere.material.color.setHSL(hue, 0.7, 0.55);
+      sphere.material.emissive.setHSL(hue, 0.6, THREE.MathUtils.lerp(0.02, 0.22, avg));
+      innerMat.emissive.setHSL(hue, 0.7, THREE.MathUtils.lerp(0.01, 0.15, avg));
+
+      // Rotate subtly, faster with energy
+      const spin = 0.25 * dt + avg * 1.5 * dt;
+      sphere.rotation.y += spin;
+      innerSphere.rotation.y += spin * 0.9;
+      sphere.rotation.x += 0.07 * dt;
+      innerSphere.rotation.x += 0.06 * dt;
+
+      renderer.render(scene, camera);
+    }
+
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
